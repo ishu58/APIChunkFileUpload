@@ -4,31 +4,100 @@
 # https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
 
 trigger:
-  - none
+  - main
+stages:
+ - stage: "Build"
+    jobs:
+      - job: "BuildJob"
+      pool:
+      vmImage: 'windows-latest'
+      
+      variables:
+      buildConfiguration: 'Release'
+      steps:
 
-pool:
-  vmImage: "windows-latest"
+        - task: DotNetCoreCLI@2
+        displayName: "Restore Project"
+        inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
 
-variables:
-  solution: "**/*.sln"
-  buildPlatform: "Any CPU"
-  buildConfiguration: "Release"
+        - task: DotNetCoreCLI@2
+        displayName : "Build Project"
+        inputs:
+        command: 'build'
+        projects: '**/*.csproj'
+        arguments: '-c $(buildConfiguration)'
 
-steps:
-  - task: NuGetToolInstaller@1
+        - task: DotNetCoreCLI@2
+        displayName : "Build Project"
+        inputs:
+        command: 'publish'
+        publishWebProjects: true
+        arguments: '-c $(buildConfiguration) -o $(build.artifactstagingdirectory)'
+        
+        - task: PublishBuildArtifacts@1
+        displayName: 'Publish Artifact'
+        inputs:PathtoPublish: '$(build.artifactstagingdirectory)'
 
-  - task: NuGetCommand@2
+ - stage: "DeployToDev"
+    dependsOn: "Build"
+    jobs:
+    - job:
+    pool:
+    vmImage: "windows-latest"
+    steps:
+    - download: current
+    artifact: drop
+    - task: AzureRmWebAppDeployment@4
     inputs:
-      restoreSolution: "$(solution)"
+    ConnectionType: 'AzureRM'
+    azureSubscription: 'Azure Connection'
+    appType: 'webApp'
+    WebAppName: 'dssdemo1-dev'
+    packageForLinux: '$(Pipeline.Workspace)/**/*.zip'
 
-  - task: VSBuild@1
+ - stage: "DeployToQA"
+    dependsOn: "DeployToDev"
+    jobs:
+    - job:
+    pool:
+    vmImage: "windows-latest"
+    steps:
+    - download: current
+    artifact: drop
+    - task: AzureRmWebAppDeployment@4
     inputs:
-      solution: "$(solution)"
-      msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactStagingDirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
-      platform: "$(buildPlatform)"
-      configuration: "$(buildConfiguration)"
+    ConnectionType: 'AzureRM'
+    azureSubscription: 'Azure Connection'
+    appType: 'webApp'
+    WebAppName: 'dssdemo1-qa'
+    packageForLinux: '$(Pipeline.Workspace)/**/*.zip'
 
-  - task: VSTest@2
+ - stage: "DeployToProd"
+    dependsOn: "DeployToQA"
+    jobs:
+    - job:
+    pool:
+    vmImage: "windows-latest"
+    steps:
+    - download: current
+    artifact: drop
+    - task: AzureRmWebAppDeployment@4
     inputs:
-      platform: "$(buildPlatform)"
-      configuration: "$(buildConfiguration)"
+    ConnectionType: 'AzureRM'
+    azureSubscription: 'Azure Connection'
+    appType: 'webApp'
+    WebAppName: 'dssdemo1-prod'
+    deployToSlotOrASE: true
+    ResourceGroupName: 'DemoRG'
+    SlotName: 'staging'
+    packageForLinux: '$(Pipeline.Workspace)/**/*.zip'
+
+    - task: AzureAppServiceManage@0
+    inputs:
+    azureSubscription: 'Azure Connection'
+    Action: 'Swap Slots'
+    WebAppName: 'dssdemo1-prod'
+    ResourceGroupName: 'DemoRG'
+    SourceSlot: 'staging'
